@@ -1,10 +1,9 @@
 #include "Client.h"
 #include <iostream>
-#include <WS2tcpip.h>
-#include <thread>
-#include <chrono>
-#include <random>  // 添加随机数头文件
-#pragma comment(lib, "ws2_32.lib")
+#include <sstream>
+#include <random>
+#include "../Common/Protocol.h"
+#include "../Common/UserStruct.h"
 
 Client::Client() : clientSocket(INVALID_SOCKET), isLoggedIn(false), running(true) {
     // 初始化 Winsock
@@ -71,49 +70,41 @@ std::string Client::receiveMessage() {
 }
 
 void Client::handleServerResponse(const std::string& response) {
-    std::cout << "\n收到服务器响应: " << response << std::endl;
-
     size_t pos = response.find('|');
-    if (pos == std::string::npos) {
-        std::cout << "\n------------------------" << std::endl;
-        std::cout << "✗ 服务器响应格式错误" << std::endl;
-        std::cout << "------------------------" << std::endl;
-        return;
-    }
-
-    try {
-        int status = std::stoi(response.substr(0, pos));
+    if (pos != std::string::npos) {
+        std::string status = response.substr(0, pos);
         std::string message = response.substr(pos + 1);
-
+        
         std::cout << "\n------------------------" << std::endl;
-        switch (status) {
-            case static_cast<int>(ResponseStatus::SUCCESS):
-                if (message.find("Registration") != std::string::npos) {
-                    std::cout << "✓ 注册成功！" << std::endl;
-                } else if (message.find("Login successful") != std::string::npos) {
-                    std::cout << "✓ 登录成功！" << std::endl;
-                    isLoggedIn = true;
-                    size_t colonPos = message.find(':');
-                    if (colonPos != std::string::npos) {
-                        currentUser = message.substr(colonPos + 1);
-                    }
-                } else if (message.find("Password changed") != std::string::npos) {
-                    std::cout << "✓ 密码修改成功！" << std::endl;
-                }
-                break;
-            case static_cast<int>(ResponseStatus::FAILED):
-                std::cout << "✗ " << message << std::endl;
-                break;
-            case static_cast<int>(ResponseStatus::USER_EXISTS):
-                std::cout << "✗ 用户已存在！" << std::endl;
-                break;
-            default:
-                std::cout << "未知状态: " << message << std::endl;
+        if (status == "3") {  // FORCE_LOGOUT，优先处理强制下线
+            std::cout << "! " << message << std::endl;
+            std::cout << "------------------------" << std::endl;
+            std::cout << "\n您已被强制下线，请重新登录！" << std::endl;
+            isLoggedIn = false;
+            currentUser = "";
+            running = false;  // 停止心跳线程
+            return;  // 直接返回，不再处理其他响应
         }
-        std::cout << "------------------------" << std::endl;
-    } catch (const std::exception& e) {
-        std::cout << "\n------------------------" << std::endl;
-        std::cout << "✗ 解析响应出错: " << e.what() << std::endl;
+        else if (status == "0") {  // SUCCESS
+            std::cout << "✓ ";
+            if (message.find("Login successful") != std::string::npos) {
+                size_t colonPos = message.find(':');
+                if (colonPos != std::string::npos) {
+                    currentUser = message.substr(colonPos + 1);
+                    isLoggedIn = true;
+                    std::cout << "登录成功！" << std::endl;
+                    std::cout << "------------------------" << std::endl;
+                    std::cout << "\n欢迎回来，" << currentUser << "！" << std::endl;
+                    showLoggedInMenu();
+                }
+            }
+            else {
+                std::cout << message << std::endl;
+            }
+        }
+        else {
+            std::cout << "? " << message << std::endl;
+        }
         std::cout << "------------------------" << std::endl;
     }
 }
@@ -200,7 +191,7 @@ void Client::sendExitMessage() {
     if (isLoggedIn) {
         std::string message = "LOGOUT:" + currentUser;
         if (sendMessage(message)) {
-            std::cout << "已通知服务器用户退出: " << currentUser << std::endl;
+            std::cout << "已通知服务用户退出: " << currentUser << std::endl;
         } else {
             std::cout << "无法通知服务器用户退出" << std::endl;
         }
@@ -209,7 +200,7 @@ void Client::sendExitMessage() {
 
 void Client::showMenu() {
     std::cout << "\n=============================" << std::endl;
-    std::cout << "     用户认证系统" << std::endl;
+    std::cout << "     户认证系统" << std::endl;
     std::cout << "=============================" << std::endl;
     
     if (!isLoggedIn) {
@@ -265,9 +256,7 @@ void Client::start() {
                     handleChangePassword();
                     break;
                 case 2:
-                    isLoggedIn = false;
-                    currentUser = "";
-                    std::cout << "已退出登录" << std::endl;
+                    logout();
                     break;
                 case 3:
                     sendExitMessage();
@@ -286,40 +275,120 @@ void Client::start() {
 void Client::sendHeartbeat() {
     int heartbeatCount = 0;
     auto lastLogTime = std::chrono::steady_clock::now();
+    lastHeartbeatResponse = std::chrono::steady_clock::now();
     
-    // 创建随机数生成器
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(10, 40);  // 10-40秒的均匀分布
+    std::uniform_int_distribution<> dis(10, 40);
     
     while (running) {
         if (isLoggedIn) {
             if (sendMessage("HEARTBEAT:" + currentUser)) {
-                heartbeatCount++;
                 std::string response = receiveMessage();
                 if (!response.empty()) {
-                    size_t pos = response.find('|');
-                    if (pos != std::string::npos) {
-                        std::string status = response.substr(0, pos);
-                        std::string message = response.substr(pos + 1);
-                        if (status == "0" && message == "HEARTBEAT_ACK") {
-                            auto now = std::chrono::steady_clock::now();
-                            auto duration = std::chrono::duration_cast<std::chrono::minutes>(now - lastLogTime).count();
-                            std::cout << "\n心跳响应：连接正常 (5分钟内心跳次数: " << heartbeatCount << ")" << std::endl;
-                            
-                            // 每5分钟重置计数
-                            if (duration >= 5) {
-                                heartbeatCount = 0;
-                                lastLogTime = now;
-                            }
-                        }
+                    lastHeartbeatResponse = std::chrono::steady_clock::now();
+                    handleServerResponse(response);
+                    if (!isLoggedIn) {
+                        break;
                     }
                 }
             }
+            
+            // 检查心跳超时
+            auto now = std::chrono::steady_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - lastHeartbeatResponse).count();
+            if (duration > 2) {  // 2秒超时
+                std::cout << "\n------------------------" << std::endl;
+                std::cout << "! 服务器心跳响应超时" << std::endl;
+                std::cout << "------------------------" << std::endl;
+                std::cout << "\n与服务器的连接已断开，请重新登录！" << std::endl;
+                isLoggedIn = false;
+                currentUser = "";
+                running = false;
+                break;
+            }
         }
         
-        // 生成随机等待时间（10-40秒）
         int waitTime = dis(gen);
         std::this_thread::sleep_for(std::chrono::seconds(waitTime));
+    }
+}
+
+bool Client::checkHeartbeatTimeout() {
+    auto now = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - lastHeartbeatResponse).count();
+    return duration <= 22;  // 改为22秒超时
+}
+
+void Client::showLoggedInMenu() {
+    while (isLoggedIn) {  // 检查登录状态
+        std::cout << "\n=============================" << std::endl;
+        std::cout << "     用户认证系统" << std::endl;
+        std::cout << "=============================" << std::endl;
+        std::cout << "当前用户: " << currentUser << std::endl;
+        std::cout << "1. 修改密码" << std::endl;
+        std::cout << "2. 退出登录" << std::endl;
+        std::cout << "3. 退出系统" << std::endl;
+        std::cout << "=============================" << std::endl;
+        std::cout << "请选择操作: ";
+
+        int choice;
+        std::cin >> choice;
+        std::cin.ignore(1000, '\n');
+
+        if (!isLoggedIn) {  // 在处理选择前再次检查登录状态
+            start();  // 如果已经被强制下线，返回主菜单
+            return;
+        }
+
+        switch (choice) {
+            case 1:
+                changePassword();
+                if (!isLoggedIn) return;  // 如果在修改密码过程中被强制下线
+                break;
+            case 2:
+                logout();
+                return;
+            case 3:
+                logout();
+                exit(0);
+            default:
+                std::cout << "无效的选择，请重试" << std::endl;
+        }
+    }
+}
+
+void Client::logout() {
+    if (isLoggedIn) {
+        if (sendMessage("LOGOUT:" + currentUser)) {
+            std::cout << "\n已成功退出登录" << std::endl;
+        }
+        isLoggedIn = false;
+        currentUser = "";
+    }
+}
+
+void Client::changePassword() {
+    if (!isLoggedIn) {  // 检查登录状态
+        std::cout << "\n您需要先登录才能修改密码" << std::endl;
+        return;
+    }
+
+    std::cout << "\n====== 修改密码 ======" << std::endl;
+    std::cout << "请输入旧密码: ";
+    std::string oldPassword;
+    std::getline(std::cin, oldPassword);
+
+    std::cout << "请输入新密码: ";
+    std::string newPassword;
+    std::getline(std::cin, newPassword);
+
+    std::string message = "CHANGE_PASSWORD:" + currentUser + "|" + oldPassword + "|" + newPassword;
+    if (sendMessage(message)) {
+        std::string response = receiveMessage();
+        handleServerResponse(response);
+        if (!isLoggedIn) {  // 如果在修改密码过程中被强制下线
+            start();  // 重新启动客户端，返回主菜单
+        }
     }
 }

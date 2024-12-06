@@ -3,9 +3,11 @@
 
 #include <winsock2.h>
 #include <string>
+#include <thread>
 #include "../Common/UserStruct.h"
 #include "../Common/Protocol.h"
 #include "UserManager.h"
+#include <unordered_map>
 
 class Server {
 public:
@@ -22,10 +24,14 @@ private:
     void handleLogin(SOCKET clientSocket, const std::string& message);
     void handleChangePassword(SOCKET clientSocket, const std::string& message);
     void handleLogout(const std::string& message);
+    void checkHeartbeatTimeouts();
+    void forceLogout(const std::string& username);
 
     SOCKET serverSocket;
     bool running;
     UserManager userManager;
+    std::thread timeoutCheckerThread;
+    std::unordered_map<std::string, SOCKET> userSockets;
 };
 
 #endif // SERVER_H 

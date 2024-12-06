@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include "../Common/UserStruct.h"
+#include <chrono>
 
 class UserManager {
 public:
@@ -14,6 +15,9 @@ public:
     bool loginUser(const std::string& username, const std::string& password);
     bool changePassword(const std::string& username, const std::string& oldPassword, const std::string& newPassword);
     void updateUserStatus(const std::string& username, bool isOnline);
+    std::vector<std::string> checkTimeouts(int timeoutSeconds);
+    std::chrono::system_clock::time_point getLastHeartbeat(const std::string& username);
+    bool isUserOnline(const std::string& username);
 
 private:
     std::unordered_map<std::string, UserInfo> users;

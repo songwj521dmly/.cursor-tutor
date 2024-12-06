@@ -3,9 +3,10 @@
 #include <WS2tcpip.h>
 #include <chrono>
 #include <iomanip>
+#include <thread>
 #pragma comment(lib, "ws2_32.lib")
 
-Server::Server() : serverSocket(INVALID_SOCKET), running(false) {
+Server::Server() : serverSocket(INVALID_SOCKET), running(true) {
     // 初始化 Winsock
     WSADATA wsaData;
     int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -13,9 +14,16 @@ Server::Server() : serverSocket(INVALID_SOCKET), running(false) {
         std::cerr << "WSAStartup failed: " << result << std::endl;
         return;
     }
+
+    // 启动超时检查线程
+    timeoutCheckerThread = std::thread(&Server::checkHeartbeatTimeouts, this);
 }
 
 Server::~Server() {
+    running = false;
+    if (timeoutCheckerThread.joinable()) {
+        timeoutCheckerThread.join();
+    }
     if (serverSocket != INVALID_SOCKET) {
         closesocket(serverSocket);
         serverSocket = INVALID_SOCKET;
@@ -48,7 +56,6 @@ void Server::start() {
     }
 
     std::cout << "Server is running on port 8888..." << std::endl;
-    running = true;
 
     while (running) {
         SOCKET clientSocket = accept(serverSocket, nullptr, nullptr);
@@ -102,6 +109,16 @@ void Server::processMessage(SOCKET clientSocket, const std::string& message) {
     std::string command = message.substr(0, colonPos);
     std::string data = message.substr(colonPos + 1);
 
+    // 检查用户是否已被强制下线（除了登录请求外）
+    if (command != "LOGIN") {
+        size_t pipePos = data.find('|');
+        std::string username = (pipePos != std::string::npos) ? data.substr(0, pipePos) : data;
+        if (!userManager.isUserOnline(username)) {
+            sendMessage(clientSocket, Protocol::createResponse(ResponseStatus::FORCE_LOGOUT, "您已被强制下线，请重新登录"));
+            return;
+        }
+    }
+
     if (command == "REGISTER") {
         handleRegister(clientSocket, data);
     }
@@ -115,12 +132,11 @@ void Server::processMessage(SOCKET clientSocket, const std::string& message) {
         handleLogout(data);
     }
     else if (command == "HEARTBEAT") {
+        std::tm now_tm;
         auto now = std::chrono::system_clock::now();
         std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-        
-        std::tm now_tm;
         localtime_s(&now_tm, &now_c);
-
+        
         std::cout << "\n收到心跳消息：" << data 
                   << " (时间: " << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S") << ")" << std::endl;
         userManager.updateUserStatus(data, true);
@@ -149,7 +165,7 @@ void Server::handleRegister(SOCKET clientSocket, const std::string& message) {
         sendMessage(clientSocket, Protocol::createResponse(ResponseStatus::SUCCESS, "Registration successful"));
     }
     else {
-        std::cout << "注册失败：用户已存���" << std::endl;
+        std::cout << "注册失败：用户已存" << std::endl;
         sendMessage(clientSocket, Protocol::createResponse(ResponseStatus::USER_EXISTS, "User already exists"));
     }
 }
@@ -169,8 +185,9 @@ void Server::handleLogin(SOCKET clientSocket, const std::string& message) {
     std::cout << "- 用户名：" << username << std::endl;
 
     if (userManager.loginUser(username, password)) {
-        std::cout << "登录成功！" << std::endl;
+        userSockets[username] = clientSocket;  // 保存用户的socket
         sendMessage(clientSocket, Protocol::createResponse(ResponseStatus::SUCCESS, "Login successful:" + username));
+        std::cout << "登录成功！" << std::endl;
     }
     else {
         std::cout << "登录失败：用户名或密码错误" << std::endl;
@@ -206,4 +223,29 @@ void Server::handleChangePassword(SOCKET clientSocket, const std::string& messag
 
 void Server::handleLogout(const std::string& username) {
     std::cout << "\n用户登出：" << username << std::endl;
+}
+
+void Server::checkHeartbeatTimeouts() {
+    while (running) {
+        auto now = std::chrono::system_clock::now();
+        std::vector<std::string> timeoutUsers = userManager.checkTimeouts(60);  // 60秒超时
+        
+        for (const auto& username : timeoutUsers) {
+            std::cout << "\n用户 " << username << " 心跳超时（60秒），强制下线" << std::endl;
+            forceLogout(username);  // 调用强制下线方法
+        }`
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+}
+
+void Server::forceLogout(const std::string& username) {
+    auto it = userSockets.find(username);
+    if (it != userSockets.end()) {
+        SOCKET clientSocket = it->second;
+        // 发送强制下线消息给客户端
+        sendMessage(clientSocket, Protocol::createResponse(ResponseStatus::FORCE_LOGOUT, "您已被强制下线（心跳超时）"));
+        userManager.updateUserStatus(username, false);
+        userSockets.erase(it);  // 移除socket映射
+    }
 } 

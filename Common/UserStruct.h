@@ -9,8 +9,11 @@ struct UserInfo {
     std::string password;
     std::string email;
     std::string deviceInfo;
-    std::chrono::system_clock::time_point lastHeartbeat;  // 用于跟踪用户的最后活动时间
-    bool isDisabled = false;  // 用户状态标志，默认为 false
+    bool isOnline;
+    std::chrono::system_clock::time_point lastHeartbeat;
+    bool isDisabled;
+
+    UserInfo() : isOnline(false), isDisabled(false) {}
 };
 
 #endif // USER_STRUCT_H

@@ -42,6 +42,7 @@ bool UserManager::loginUser(const std::string& username, const std::string& pass
         return false;
     }
 
+    user.isOnline = true;
     user.lastHeartbeat = std::chrono::system_clock::now();
     return true;
 }
@@ -70,9 +71,9 @@ bool UserManager::changePassword(const std::string& username, const std::string&
 void UserManager::updateUserStatus(const std::string& username, bool isOnline) {
     auto it = users.find(username);
     if (it != users.end()) {
-        UserInfo& user = it->second;
+        it->second.isOnline = isOnline;
         if (isOnline) {
-            user.lastHeartbeat = std::chrono::system_clock::now();
+            it->second.lastHeartbeat = std::chrono::system_clock::now();
         }
     }
 }
@@ -130,4 +131,42 @@ void UserManager::saveUsersToFile() {
              << '\n';
     }
     file.close();
-} 
+}
+
+std::vector<std::string> UserManager::checkTimeouts(int timeoutSeconds) {
+    std::vector<std::string> timeoutUsers;
+    auto now = std::chrono::system_clock::now();
+    
+    for (const auto& pair : users) {
+        const auto& username = pair.first;
+        const auto& user = pair.second;
+        
+        if (user.isOnline) {
+            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - user.lastHeartbeat).count();
+            if (duration > timeoutSeconds) {
+                std::cout << "用户 " << username << " 超时检测: "
+                          << duration << " 秒 (超时阈值: " << timeoutSeconds << " 秒)" << std::endl;
+                timeoutUsers.push_back(username);
+            }
+        }
+    }
+    
+    return timeoutUsers;
+}
+
+std::chrono::system_clock::time_point UserManager::getLastHeartbeat(const std::string& username) {
+    auto it = users.find(username);
+    if (it != users.end()) {
+        return it->second.lastHeartbeat;
+    }
+    return std::chrono::system_clock::now();  // 如果用户不存在，返回当前时间
+}
+
+bool UserManager::isUserOnline(const std::string& username) {
+    auto it = users.find(username);
+    if (it != users.end()) {
+        return it->second.isOnline;
+    }
+    return false;
+}
+  

@@ -7,7 +7,8 @@
 enum class ResponseStatus {
     SUCCESS = 0,
     FAILED = 1,
-    USER_EXISTS = 2
+    USER_EXISTS = 2,
+    FORCE_LOGOUT = 3
 };
 
 class Protocol {
